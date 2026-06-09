@@ -156,18 +156,19 @@ venv/Scripts/python.exe setup_elfa_trigger.py
 
 ElfaQuant demonstrates end-to-end AI-driven DeFi automation: a multi-phase scoring engine feeds real-time market signals from Elfa AI into on-chain swap execution on Mantle — fully autonomous, no human in the loop.
 
-## Live Demo
+## 🎥 Live Demo
 
-Swap transaction executed on Mantle mainnet during development:
+### Confirmed On-chain Transaction
+- **Network**: Mantle Mainnet
+- **Action**: MNT → USDT swap via Fluxion DEX
+- **TX Hash**: `615e0fb0798ced3cbafdab6b8a1356767b12c69d472fb277b48c18c713ac7294`
+- **Explorer**: https://explorer.mantle.xyz/tx/615e0fb0798ced3cbafdab6b8a1356767b12c69d472fb277b48c18c713ac7294
 
-```
-Tx:      0x615e0fb0798ced3cbafdab6b8a1356767b12c69d472fb277b48c18c713ac7294
-Pair:    WMNT → USDT0 (0.1 MNT)
-DEX:     Fluxion V3 (fee tier 0.3%)
-Network: Mantle Mainnet (chainId: 5000)
-```
-
-[View on Mantle Explorer](https://explorer.mantle.xyz/tx/615e0fb0798ced3cbafdab6b8a1356767b12c69d472fb277b48c18c713ac7294)
+### Dry-run Results (2026-06-09)
+| Mode | Entry | SL | TP | Size |
+|------|-------|----|----|------|
+| ENTER_LONG | $60,889 | $57,077 | $68,515 | 0.001 MNT |
+| ENTER_SHORT | $60,863 | $64,672 | $53,244 | 3.83 USDT |
 
 ## License
 
