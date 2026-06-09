@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "elfa-ai": {
+      "source": "elfa-ai/skills",
+      "sourceType": "github",
+      "skillPath": "skills/elfa-ai/SKILL.md",
+      "computedHash": "f7f20910e34b07a41c6c9f268a526ee0f65ef18131a2c5fe3668df3d409fff5e"
+    },
+    "elfa-grvt-bot": {
+      "source": "elfa-ai/skills",
+      "sourceType": "github",
+      "skillPath": "skills/elfa-grvt-bot/SKILL.md",
+      "computedHash": "bf2e0fdb38d5d932031906768a2d84e6ac47a61011c7b13e0fb9c427899947a7"
+    }
+  }
+}

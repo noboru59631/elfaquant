@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.elfa.ai)",
+      "Bash(venv/Scripts/python.exe -c ' *)",
+      "Bash(\"venv/Scripts/python.exe\" analysis/phase2_fundamentals.py)",
+      "Bash(\"venv/Scripts/python.exe\" analysis/phase3_technical.py)"
+    ]
+  }
+}

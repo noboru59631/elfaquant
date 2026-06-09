@@ -1,0 +1,1 @@
+{"conditions": {"AND": [{"source": "ta", "method": "rsi", "args": {"symbol": "BTC", "timeframe": "1h"}, "operator": "<", "value": 30}]}, "actions": [{"stepId": "step_1", "type": "notify", "params": {"message": "BTC RSI oversold - enter long"}}], "expiresIn": "3d"}

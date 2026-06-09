@@ -63,15 +63,23 @@ async def _fetch_and_update_balance() -> bool:
     return False
 
 
-async def _run_swap(amount_mnt: float) -> str:
+async def _run_long(amount_mnt: float) -> str:
     """wrap_mnt → approve_token → execute_swap を非同期で実行してtx hashを返す。"""
     loop = asyncio.get_event_loop()
-    logger.info(f"[SWAP] wrap {amount_mnt} MNT → WMNT")
+    logger.info(f"[LONG] wrap {amount_mnt} MNT → WMNT")
     await loop.run_in_executor(None, mx.wrap_mnt, amount_mnt)
-    logger.info("[SWAP] approve WMNT → Router")
+    logger.info("[LONG] approve WMNT → Router")
     await loop.run_in_executor(None, mx.approve_token)
-    logger.info(f"[SWAP] execute_swap {amount_mnt} WMNT → USDT")
+    logger.info(f"[LONG] execute_swap {amount_mnt} WMNT → USDT")
     tx_hash = await loop.run_in_executor(None, mx.execute_swap, amount_mnt)
+    return tx_hash
+
+
+async def _run_short(amount_usdt: float) -> str:
+    """approve_usdt → execute_swap_usdt_to_mnt を非同期で実行してtx hashを返す。"""
+    loop = asyncio.get_event_loop()
+    logger.info(f"[SHORT] execute_short {amount_usdt} USDT → WMNT")
+    tx_hash = await loop.run_in_executor(None, mx.execute_short, amount_usdt)
     return tx_hash
 
 
@@ -129,42 +137,62 @@ async def webhook(payload: WebhookPayload):
     if decision == "HOLD":
         return {"status": "hold", "decision": decision, "reason": phase4["reason"]}
 
-    if decision == "ENTER_SHORT":
-        reason = "ENTER_SHORT → HOLD (未実装)"
-        logger.info(f"[ORDER] {reason}")
-        return {"status": "hold", "decision": "HOLD", "reason": reason}
+    if decision == "ENTER_LONG":
+        size_mnt = phase5.get("size") or 0.0
+        if size_mnt <= 0:
+            reason = "computed size is zero - swap skipped"
+            logger.info(f"[ORDER] skipped: {reason}")
+            return {"status": "skipped", "decision": decision, "reason": reason}
+        logger.info(f"[ORDER] ENTER_LONG → Mantle swap {size_mnt} MNT→USDT "
+                    f"(entry={phase5.get('entry_price')} sl={phase5.get('sl_price')} tp={phase5.get('tp_price')})")
+        try:
+            tx_hash = await _run_long(size_mnt)
+            logger.info(f"[ORDER] long swap placed: tx={tx_hash}")
+            return {
+                "status":   "ok",
+                "decision": decision,
+                "tx_hash":  tx_hash,
+                "size_mnt": size_mnt,
+                "explorer": f"https://explorer.mantle.xyz/tx/{tx_hash}",
+                "reason":   f"ENTER_LONG swap {size_mnt} MNT→USDT",
+            }
+        except Exception as e:
+            logger.error(f"[ORDER] long swap failed: {e}")
+            return {"status": "error", "decision": decision, "reason": f"swap failed: {e}"}
 
-    # ENTER_LONG: MNT→USDT スワップ
-    size_mnt = phase5.get("size") or 0.0
-    if size_mnt <= 0:
-        reason = "computed size is zero - swap skipped"
-        logger.info(f"[ORDER] skipped: {reason}")
-        return {"status": "skipped", "decision": decision, "reason": reason}
-
-    logger.info(f"[ORDER] ENTER_LONG → Mantle swap {size_mnt} MNT→USDT "
+    # ENTER_SHORT: USDT→WMNT スワップ（risk_amount USDT分）
+    size_usdt = phase5.get("risk_amount") or 3.83
+    logger.info(f"[ORDER] ENTER_SHORT → Mantle swap {size_usdt} USDT→WMNT "
                 f"(entry={phase5.get('entry_price')} sl={phase5.get('sl_price')} tp={phase5.get('tp_price')})")
     try:
-        tx_hash = await _run_swap(size_mnt)
-        logger.info(f"[ORDER] swap placed: tx={tx_hash}")
+        tx_hash = await _run_short(size_usdt)
+        logger.info(f"[ORDER] short swap placed: tx={tx_hash}")
         return {
-            "status":    "ok",
-            "decision":  decision,
-            "tx_hash":   tx_hash,
-            "size_mnt":  size_mnt,
-            "explorer":  f"https://explorer.mantle.xyz/tx/{tx_hash}",
-            "reason":    f"ENTER_LONG swap {size_mnt} MNT→USDT",
+            "status":     "ok",
+            "decision":   decision,
+            "tx_hash":    tx_hash,
+            "size_usdt":  size_usdt,
+            "explorer":   f"https://explorer.mantle.xyz/tx/{tx_hash}",
+            "reason":     f"ENTER_SHORT swap {size_usdt} USDT→WMNT",
         }
     except Exception as e:
-        logger.error(f"[ORDER] swap failed: {e}")
+        logger.error(f"[ORDER] short swap failed: {e}")
         return {"status": "error", "decision": decision, "reason": f"swap failed: {e}"}
 
 
-@app.post("/test_order")
-async def test_order():
-    """ENTER_LONG を強制シミュレート。実注文は一切行わない (dry_run=True)。"""
-    logger.info("[TEST] dry-run test_order triggered")
+class TestOrderBody(BaseModel):
+    mode: str = "long"  # "long" or "short"
 
-    result        = run_analysis(symbol="BTC", balance=balance)
+
+@app.post("/test_order")
+async def test_order(body: TestOrderBody = TestOrderBody()):
+    """ENTER_LONG / ENTER_SHORT を強制シミュレート。実注文は一切行わない (dry_run=True)。
+    Body: {"mode": "long"} または {"mode": "short"}
+    """
+    mode = body.mode.lower()
+    logger.info(f"[TEST] dry-run test_order triggered (mode={mode})")
+
+    result         = run_analysis(symbol="BTC", balance=balance)
     phase1, phase3 = result["phase1"], result["phase3"]
 
     price = phase3.get("price")
@@ -172,15 +200,34 @@ async def test_order():
     if price is None or price <= 0 or atr is None or atr <= 0:
         return {"error": f"could not fetch live price/ATR (price={price}, atr={atr})"}
 
+    if mode == "short":
+        mock_phase4 = {"decision": "ENTER_SHORT", "regime": phase1.get("regime")}
+        phase5      = calculate_sizing(mock_phase4, price=price, balance=balance, atr=atr, risk_pct=RISK_PCT)
+        size_usdt   = phase5["risk_amount"]
+        logger.info(
+            f"[TEST] DRY-RUN: would swap {size_usdt} USDT→WMNT on Mantle "
+            f"entry={price:.1f} sl={phase5['sl_price']} tp={phase5['tp_price']}"
+        )
+        return {
+            "dry_run":    True,
+            "decision":   "ENTER_SHORT",
+            "entry_price": phase5["entry_price"],
+            "sl_price":   phase5["sl_price"],
+            "tp_price":   phase5["tp_price"],
+            "size_usdt":  size_usdt,
+            "balance":    balance,
+            "swap_flow":  "approve_usdt → execute_swap_usdt_to_mnt (USDT→WMNT)",
+            "message":    "dry-run only, no real swap executed",
+        }
+
+    # mode == "long" (default)
     mock_phase4 = {"decision": "ENTER_LONG", "regime": phase1.get("regime")}
     phase5      = calculate_sizing(mock_phase4, price=price, balance=balance, atr=atr, risk_pct=RISK_PCT)
     size_mnt    = phase5["size"]
-
     logger.info(
         f"[TEST] DRY-RUN: would swap {size_mnt} MNT→USDT on Mantle "
         f"entry={price:.1f} sl={phase5['sl_price']} tp={phase5['tp_price']}"
     )
-
     return {
         "dry_run":    True,
         "decision":   "ENTER_LONG",

@@ -1,0 +1,431 @@
+﻿import asyncio, time, pathlib, httpx
+from decimal import Decimal
+from collections import deque
+from dataclasses import dataclass
+from typing import Tuple, Optional
+from elfa_grvt_bot.grvt_client import GrvtClient
+
+# ============================================================
+# 設定（FIXME箇所のみ変更してください）
+# ============================================================
+@dataclass
+class Cfg:
+    symbol          : str     = "BTC_USDT_Perp"
+    base_size       : Decimal = Decimal("0.05")   # FIXME: ロットサイズ
+    max_inv         : Decimal = Decimal("0.10")   # FIXME: 最大在庫
+    spread_min      : Decimal = Decimal("1.5")    # 最小スプレッド USD
+    spread_max      : Decimal = Decimal("20.0")   # 最大スプレッド USD
+    skew_max        : Decimal = Decimal("3.0")    # 最大スキュー USD
+    atr_window      : int     = 20
+    risk_mult_init  : Decimal = Decimal("1.0")
+    risk_mult_max   : Decimal = Decimal("1.4")
+    risk_mult_min   : Decimal = Decimal("0.4")
+    risk_adjust_sec : int     = 30
+    cooldown_sec    : int     = 300               # クールダウン秒
+    tier1_pct       : Decimal = Decimal("0.0010") # -0.10%
+    tier2_pct       : Decimal = Decimal("0.0015") # -0.15%
+    tier3_pct       : Decimal = Decimal("0.0020") # -0.20%
+    tier4_pct       : Decimal = Decimal("0.0025") # -0.25%
+    daily_loss_limit: Decimal = Decimal("-20")    # FIXME: 日次損失上限
+    maker_rebate    : Decimal = Decimal("0.00001")
+    taker_fee       : Decimal = Decimal("0.00037")
+    refresh_sec     : float   = 3.0
+    dry_run         : bool    = False             # FIXME: テスト時True
+
+CFG = Cfg()
+
+# ============================================================
+# グローバル状態
+# ============================================================
+position    : Decimal = Decimal("0")
+entry_price : Decimal = Decimal("0")
+entry_time  : float   = 0.0
+daily_pnl   : Decimal = Decimal("0")
+total_vol   : Decimal = Decimal("0")
+risk_mult   : Decimal = CFG.risk_mult_init
+cooldown_until : float = 0.0
+consec_derisk  : int  = 0
+maker_fills : int = 0
+taker_closes: int = 0
+start_balance: Decimal = Decimal("0")
+prices      : deque = deque(maxlen=CFG.atr_window)
+rolling_pnl : Decimal = Decimal("0")
+
+# ============================================================
+# API ヘルパー
+# ============================================================
+async def get_account(grvt: GrvtClient) -> dict:
+    from mm_bot_v6 import get_account_data
+    return await get_account_data(grvt)
+
+async def cancel_all(grvt: GrvtClient) -> None:
+    if CFG.dry_run: return
+    try:
+        from mm_bot_v6 import cancel_all as cancel_all_v6
+        await cancel_all_v6(grvt)
+    except Exception as e:
+        print(f"  [cancel error] {e}")
+
+async def place_limit(grvt: GrvtClient, is_buy: bool,
+                      price: Decimal, size: Decimal) -> bool:
+    if CFG.dry_run:
+        print(f"  [DRY] {'BID' if is_buy else 'ASK'} ${float(price):,.1f} x{float(size):.3f}")
+        return True
+    try:
+        await grvt._place_single_order(
+            symbol=CFG.symbol, is_buying=is_buy,
+            amount=size, is_market=False,
+            limit_price=price, time_in_force="GTC",
+            post_only=True, reduce_only=False)
+        return True
+    except Exception as e:
+        print(f"  [limit error] {e}")
+        return False
+
+async def market_close(grvt: GrvtClient, reason: str, mid: Decimal) -> None:
+    global position, entry_price, entry_time, daily_pnl, taker_closes, consec_derisk, cooldown_until, risk_mult
+    if abs(position) < Decimal("0.001"): return
+    await cancel_all(grvt)
+    is_buy = position < 0
+    size   = abs(position)
+    slippage = Decimal("1.02") if is_buy else Decimal("0.98")
+    lp = (mid * slippage).quantize(Decimal("0.1"))
+    fee = size * (entry_price if entry_price > 0 else mid) * CFG.taker_fee
+    daily_pnl -= fee
+    taker_closes += 1
+    if not CFG.dry_run:
+        try:
+            await grvt._place_single_order(
+                symbol=CFG.symbol, is_buying=is_buy,
+                amount=size, is_market=True,
+                limit_price=lp, time_in_force="IOC",
+                reduce_only=True)
+        except Exception as e:
+            print(f"  [market close error] {e}")
+    print(f"  🛑 CLOSE [{reason}] size={float(size):.3f} fee=-${float(fee):.4f}")
+    position    = Decimal("0")
+    entry_price = Decimal("0")
+    entry_time  = 0.0
+    # デリスク連続カウント
+    consec_derisk += 1
+    if consec_derisk >= 2:
+        cooldown_until = time.time() + CFG.cooldown_sec
+        risk_mult = CFG.risk_mult_min
+        print(f"  ❄️  クールダウン開始 ({CFG.cooldown_sec}秒)")
+        consec_derisk = 0
+
+# ============================================================
+# スプレッド・スキュー計算
+# ============================================================
+def calc_atr() -> Decimal:
+    if len(prices) < 2: return Decimal("5")
+    r = [abs(prices[i]-prices[i-1]) for i in range(1,len(prices))]
+    return Decimal(str(sum(r)/len(r)))
+
+def calc_spread() -> Decimal:
+    atr = calc_atr()
+    inv_ratio = abs(position / CFG.max_inv)
+    inv_premium = (inv_ratio ** Decimal("1.5")) * Decimal("3.0")
+    spread = CFG.spread_min + atr * Decimal("0.35") + inv_premium
+    return max(CFG.spread_min, min(CFG.spread_max, spread))
+
+def calc_quotes(mid: Decimal) -> Tuple[Decimal, Decimal]:
+    spread = calc_spread()
+    skew   = (position / CFG.max_inv) * CFG.skew_max
+    half   = spread / 2
+    bid = (mid - half - skew).quantize(Decimal("0.1"))
+    ask = (mid + half - skew).quantize(Decimal("0.1"))
+    return bid, ask
+
+# ============================================================
+# ティア判定
+# ============================================================
+def assess_tier(upnl: Decimal) -> int:
+    if entry_price == 0 or position == 0: return 0
+    notional = abs(position) * entry_price
+    if notional == 0: return 0
+    loss_pct = abs(upnl) / notional if upnl < 0 else Decimal("0")
+    if loss_pct >= CFG.tier4_pct: return 4
+    if loss_pct >= CFG.tier3_pct: return 3
+    if loss_pct >= CFG.tier2_pct: return 2
+    if loss_pct >= CFG.tier1_pct: return 1
+    return 0
+
+# ============================================================
+# risk_mult 調整（損失時に下げる — v6と逆）
+# ============================================================
+_last_risk_adj: float = 0.0
+def adjust_risk_mult() -> None:
+    global risk_mult, _last_risk_adj
+    if time.time() - _last_risk_adj < CFG.risk_adjust_sec: return
+    _last_risk_adj = time.time()
+    if rolling_pnl > 0:
+        risk_mult = min(CFG.risk_mult_max, risk_mult + Decimal("0.05"))
+    elif rolling_pnl < 0:
+        risk_mult = max(CFG.risk_mult_min, risk_mult - Decimal("0.10"))
+    if daily_pnl < Decimal("-5"):
+        risk_mult = max(CFG.risk_mult_min, risk_mult - Decimal("0.05"))
+
+def effective_size() -> Decimal:
+    s = CFG.base_size * risk_mult
+    return (s / Decimal("0.001")).to_integral_value() * Decimal("0.001")
+
+# ============================================================
+# メインループ
+# ============================================================
+async def main():
+    global position, entry_price, entry_time, daily_pnl
+    global total_vol, maker_fills, start_balance, rolling_pnl
+    global cooldown_until
+
+    env = {k.strip(): v.strip()
+           for line in pathlib.Path(".env").read_text(encoding="utf-8").splitlines()
+           if "=" in line and not line.startswith("#")
+           for k, v in [line.split("=", 1)]}
+
+    grvt = GrvtClient(api_key=env["GRVT_TRADING_API_KEY"],
+                      private_key=env["GRVT_TRADING_PRIVATE_KEY"])
+    await grvt.login()
+
+    acct = await get_account(grvt)
+    start_balance = Decimal(str(acct.get("total_equity", 0) or acct.get("totalEquity", 0) or 0))
+
+    print("="*62)
+    print("  GRVT MM Bot v7 — 防衛的両建てMM + 段階デリスク")
+    print(f"  SIZE={CFG.base_size}BTC MAX={CFG.max_inv}BTC "
+          f"DailyLimit=${CFG.daily_loss_limit}")
+    print(f"  {'[DRY RUN]' if CFG.dry_run else '[LIVE]'}")
+    print("="*62)
+    print(f"✅ ログイン成功  残高: ${float(start_balance):,.2f}")
+
+    mid = Decimal("0")
+    try:
+        while True:
+            # 1. 価格取得
+            mid = Decimal(str(await grvt.fetch_mid_price(CFG.symbol)))
+            prices.append(mid)
+
+            # 2. アカウント取得
+            acct = await get_account(grvt)
+            equity = Decimal(str(acct.get("total_equity", 0) or acct.get("totalEquity", 0) or start_balance))
+            upnl   = Decimal(str(acct.get("unrealized_pnl", 0)))
+            daily_pnl   = equity - start_balance
+            rolling_pnl = daily_pnl  # 簡略化（日次PnLで代用）
+
+            # 3. ポジション更新・フィル検知
+            new_pos = Decimal("0")
+            for p in acct.get("positions", []):
+                if p.get("instrument") == CFG.symbol:
+                    new_pos = Decimal(str(p["size"]))
+                    break
+            if new_pos != position:
+                diff = new_pos - position
+                side = "BID" if diff > 0 else "ASK"
+                if entry_price == 0 or abs(new_pos) > abs(position):
+                    entry_price = mid
+                    entry_time  = time.time()
+                maker_fills += 1
+                total_vol   += abs(diff) * mid
+                print(f"  💰 [{side}フィル] "
+                      f"{'+' if diff>0 else ''}{float(diff):.3f}BTC"
+                      f" @ ${float(mid):,.1f}  Pos:{float(new_pos):+.3f}BTC")
+                position = new_pos
+                if new_pos == 0:
+                    rolling_pnl += upnl  # クローズ時に確定PnL記録
+
+            # 4. 日次損失チェック
+            if daily_pnl < CFG.daily_loss_limit:
+                print(f"\n🛑 日次損失上限: ${float(daily_pnl):+.2f}")
+                await market_close(grvt, "DAILY_LIMIT", mid)
+                break
+
+            # 5. クールダウンチェック
+            if time.time() < cooldown_until:
+                rem = int(cooldown_until - time.time())
+                print(f"  ❄️  クールダウン残り{rem}秒")
+                await asyncio.sleep(CFG.refresh_sec)
+                continue
+
+            # 6. ティア判定 → クオート可否
+            tier = assess_tier(upnl)
+            quote_bid = True
+            quote_ask = True
+
+            if tier == 1:
+                # サイズ削減のみ（両側継続）
+                global risk_mult
+                risk_mult = max(CFG.risk_mult_min, risk_mult - Decimal("0.15"))
+                print(f"  ⚠️  T1: サイズ削減 RM={float(risk_mult):.2f}")
+
+            elif tier == 2:
+                # 在庫削減側のみ
+                if position > 0:
+                    quote_bid = False
+                    print("  ⚠️  T2: ASKのみ")
+                else:
+                    quote_ask = False
+                    print("  ⚠️  T2: BIDのみ")
+
+            elif tier == 3:
+                # 積極アンワインド（IOC指値）
+                print("  🚨 T3: アンワインド")
+                is_buy = position < 0
+                lp = (mid * (Decimal("1.005") if is_buy
+                             else Decimal("0.995"))).quantize(Decimal("0.1"))
+                if not CFG.dry_run:
+                    try:
+                        await grvt._place_single_order(
+                            symbol=CFG.symbol, is_buying=is_buy,
+                            amount=abs(position), is_market=False,
+                            limit_price=lp, time_in_force="IOC",
+                            reduce_only=True)
+                    except Exception as e:
+                        print(f"  [t3 error] {e}")
+                quote_bid = quote_ask = False
+                # T3後クールダウン（5分間新規注文停止）
+                cooldown_until = time.time() + CFG.cooldown_sec
+                print(f"  ❄️  T3クールダウン開始 ({CFG.cooldown_sec}秒)")
+
+            elif tier == 4:
+                # 強制クローズ
+                await market_close(grvt, "TIER4_SL", mid)
+                quote_bid = quote_ask = False
+
+            # 7. risk_mult調整
+            adjust_risk_mult()
+            size = effective_size()
+
+            # 8. 注文キャンセル＆再発注
+            await cancel_all(grvt)
+            bid_px, ask_px = calc_quotes(mid)
+
+            bid_ok = ask_ok = False
+            if quote_bid and position < CFG.max_inv:
+                bid_size = min(size, CFG.max_inv - position)
+                bid_size = (bid_size / Decimal('0.001')).to_integral_value() * Decimal('0.001')
+                if bid_size >= Decimal('0.001'):
+                    bid_ok = await place_limit(grvt, True,  bid_px, bid_size)
+            if quote_ask and position > -CFG.max_inv:
+                ask_size = min(size, CFG.max_inv + position)
+                ask_size = (ask_size / Decimal('0.001')).to_integral_value() * Decimal('0.001')
+                if ask_size >= Decimal('0.001'):
+                    ask_ok = await place_limit(grvt, False, ask_px, ask_size)
+
+            # 9. ログ
+            b_icon = "✅" if bid_ok else "⏸"
+            a_icon = "✅" if ask_ok else "⏸"
+            print(f"[{time.strftime('%H:%M:%S')}] "
+                  f"mid=${float(mid):,.1f} "
+                  f"sprd=${float(calc_spread()):.1f} "
+                  f"BID:{b_icon}${float(bid_px):,.1f} "
+                  f"ASK:{a_icon}${float(ask_px):,.1f} "
+                  f"Pos:{float(position):+.3f} "
+                  f"日次:${float(daily_pnl):+.3f} "
+                  f"UPnL:${float(upnl):+.2f} "
+                  f"Vol:${float(total_vol):,.0f} "
+                  f"RM:{float(risk_mult):.2f} T:{tier} "
+                  f"F:{maker_fills}(M{taker_closes})")
+
+            await asyncio.sleep(CFG.refresh_sec)
+
+    except KeyboardInterrupt:
+        print("\n⏹ 手動停止")
+
+    finally:
+        print("\n  シャットダウン中...")
+        await cancel_all(grvt)
+        if abs(position) >= Decimal("0.001"):
+            await market_close(grvt, "SHUTDOWN", mid)
+        acct_end = await get_account(grvt)
+        end_bal  = Decimal(str(acct_end.get("total_equity", 0)))
+        print(f"\n  開始: ${float(start_balance):,.2f} → "
+              f"終了: ${float(end_bal):,.2f}")
+        print(f"  純損益: ${float(end_bal-start_balance):+.4f}")
+        print(f"  出来高: ${float(total_vol):,.0f}")
+        print(f"  Makerフィル:{maker_fills} Takerクローズ:{taker_closes}")
+        await grvt.close()
+
+async def run_forever():
+    """日次損失上限到達後30分待機して自動再起動。累計-$100で完全停止。"""
+    import datetime
+    cumulative_loss = Decimal("0")
+    CUMULATIVE_LIMIT = Decimal("-100")
+    COOLDOWN_MIN = 30
+
+    session = 0
+    while True:
+        session += 1
+        print(f"\n{'='*55}")
+        print(f"  🚀 セッション #{session} 開始  "
+              f"({datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC)")
+        print(f"  累計損益: ${float(cumulative_loss):+.2f}  "
+              f"(上限: ${float(CUMULATIVE_LIMIT):.0f})")
+        print(f"{'='*55}")
+
+        # セッション開始前残高を取得して損益計算に使う
+        try:
+            import pathlib, json
+            env = {k.strip(): v.strip()
+                   for line in pathlib.Path('.env').read_text(encoding='utf-8').splitlines()
+                   if '=' in line and not line.startswith('#')
+                   for k, v in [line.split('=', 1)]}
+            from elfa_grvt_bot.grvt_client import GrvtClient
+            _grvt_tmp = GrvtClient(
+                api_key=env['GRVT_TRADING_API_KEY'],
+                private_key=env['GRVT_TRADING_PRIVATE_KEY'])
+            await _grvt_tmp.login()
+            _acct = await get_account(_grvt_tmp)
+            bal_before = Decimal(str(_acct.get("total_equity", 0)))
+            await _grvt_tmp.close()
+        except Exception as e:
+            print(f"  ⚠️  残高取得失敗: {e}")
+            bal_before = Decimal("0")
+
+        # main() 実行
+        try:
+            await main()
+        except Exception as e:
+            print(f"  ❌ セッション例外: {e}")
+
+        # セッション終了後残高を取得して損益を計算
+        try:
+            _grvt_tmp2 = GrvtClient(
+                api_key=env['GRVT_TRADING_API_KEY'],
+                private_key=env['GRVT_TRADING_PRIVATE_KEY'])
+            await _grvt_tmp2.login()
+            _acct2 = await get_account(_grvt_tmp2)
+            bal_after = Decimal(str(_acct2.get("total_equity", 0)))
+            await _grvt_tmp2.close()
+            session_pnl = bal_after - bal_before
+            cumulative_loss += session_pnl
+            print(f"\n  📊 セッション #{session} 終了")
+            print(f"     損益: ${float(session_pnl):+.2f}  "
+                  f"累計: ${float(cumulative_loss):+.2f}")
+        except Exception as e:
+            print(f"  ⚠️  終了残高取得失敗: {e}")
+
+        # 累計損失チェック
+        if cumulative_loss <= CUMULATIVE_LIMIT:
+            print(f"\n🚨 累計損失 ${float(cumulative_loss):+.2f} が"
+                  f" ${float(CUMULATIVE_LIMIT):.0f} を超えました。")
+            print("   ボットを完全停止します。")
+            break
+
+        # 30分クールダウン
+        print(f"\n  ⏳ {COOLDOWN_MIN}分後に再起動します... "
+              f"(Ctrl+C で完全停止)")
+        print(f"     再起動予定: "
+              f"{(datetime.datetime.utcnow() + datetime.timedelta(minutes=COOLDOWN_MIN)).strftime('%H:%M:%S')} UTC")
+        try:
+            for remaining in range(COOLDOWN_MIN * 60, 0, -30):
+                mins, secs = divmod(remaining, 60)
+                print(f"     残り {mins:02d}:{secs:02d}", end='\r')
+                await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            print("\n  ⏹ クールダウン中に停止シグナル受信")
+            break
+        print()  # 改行
+
+    print("\n✅ run_forever() 終了")
+
+asyncio.run(run_forever())

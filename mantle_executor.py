@@ -55,6 +55,8 @@ POOL_ABI = [
 WMNT_ABI = [
     {"name": "deposit",   "type": "function", "stateMutability": "payable",
      "inputs": [], "outputs": []},
+    {"name": "withdraw",  "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "wad", "type": "uint256"}], "outputs": []},
     {"name": "approve",   "type": "function", "stateMutability": "nonpayable",
      "inputs": [{"name": "guy", "type": "address"}, {"name": "wad", "type": "uint256"}],
      "outputs": [{"name": "", "type": "bool"}]},
@@ -67,6 +69,18 @@ WMNT_ABI = [
     {"name": "transferFrom", "type": "function", "stateMutability": "nonpayable",
      "inputs": [{"name": "src", "type": "address"}, {"name": "dst", "type": "address"}, {"name": "wad", "type": "uint256"}],
      "outputs": [{"name": "", "type": "bool"}]},
+]
+
+USDT_ABI = [
+    {"name": "approve",   "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "spender", "type": "address"}, {"name": "amount", "type": "uint256"}],
+     "outputs": [{"name": "", "type": "bool"}]},
+    {"name": "allowance", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "owner", "type": "address"}, {"name": "spender", "type": "address"}],
+     "outputs": [{"name": "", "type": "uint256"}]},
+    {"name": "balanceOf", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "account", "type": "address"}],
+     "outputs": [{"name": "", "type": "uint256"}]},
 ]
 
 QUOTER_ABI = [{
@@ -89,6 +103,7 @@ QUOTER_ABI = [{
 w3       = Web3(Web3.HTTPProvider(RPC_URL))
 account  = w3.eth.account.from_key(PRIVATE_KEY)
 wmnt     = w3.eth.contract(address=WMNT_ADDRESS, abi=WMNT_ABI)
+usdt     = w3.eth.contract(address=USDT_ADDRESS, abi=USDT_ABI)
 factory  = w3.eth.contract(address=FACTORY_ADDRESS, abi=FACTORY_ABI)
 quoter   = w3.eth.contract(address=QUOTER_ADDRESS, abi=QUOTER_ABI)
 
@@ -220,6 +235,105 @@ def execute_swap(amount_mnt: float) -> str:
     _simulate({k: v for k, v in tx.items() if k != "nonce"})
 
     return _send_tx(tx)
+
+
+def unwrap_wmnt(amount_mnt: float) -> str:
+    """WMNTをネイティブMNTに戻す (WMNT.withdraw)."""
+    amount_wei = int(amount_mnt * 10**18)
+    print(f"\n[UNWRAP] {amount_mnt} WMNT → MNT ({amount_wei} wei)")
+    nonce = w3.eth.get_transaction_count(account.address)
+    tx = wmnt.functions.withdraw(amount_wei).build_transaction({
+        "from":     account.address,
+        "nonce":    nonce,
+        "gas":      60000,
+        "gasPrice": w3.eth.gas_price,
+        "chainId":  CHAIN_ID,
+    })
+    return _send_tx(tx)
+
+
+def approve_usdt() -> str:
+    """USDTのRouterへの無制限approveを実行する（未承認の場合のみ）。"""
+    max_uint256 = 2**256 - 1
+    allowance   = usdt.functions.allowance(account.address, ROUTER_ADDRESS).call()
+    print(f"\n[APPROVE_USDT] 現在のallowance: {allowance}")
+    if allowance > 10**6:
+        print("[APPROVE_USDT] 承認済み - スキップ")
+        return ""
+    print("[APPROVE_USDT] USDT → Router approve (unlimited)")
+    nonce = w3.eth.get_transaction_count(account.address)
+    tx = usdt.functions.approve(ROUTER_ADDRESS, max_uint256).build_transaction({
+        "from":     account.address,
+        "nonce":    nonce,
+        "gas":      60000,
+        "gasPrice": w3.eth.gas_price,
+        "chainId":  CHAIN_ID,
+    })
+    return _send_tx(tx)
+
+
+def execute_swap_usdt_to_mnt(amount_usdt: float) -> str:
+    """Fluxion Quote APIからcalldataを取得してUSDT→WMNTスワップを実行する。"""
+    amount_units = int(amount_usdt * 10**6)  # USDT decimals=6
+    print(f"\n[SWAP_SHORT] {amount_usdt} USDT → WMNT ({amount_units} units)")
+
+    body = {
+        "inputMint":       USDT_ADDRESS,
+        "outputMint":      WMNT_ADDRESS,
+        "amount":          str(amount_units),
+        "userPublicKey":   account.address,
+        "dynamicSlippage": False,
+        "slippageBps":     "100",
+    }
+    resp = requests.post(QUOTE_URL, json=body, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    out_amount = int(data["outAmount"]) / 10**18
+    min_out    = int(data["minOutAmount"]) / 10**18
+    print(f"  見積もり: {out_amount:.6f} WMNT (最低 {min_out:.6f} WMNT, impact={data.get('priceImpact')}%)")
+
+    tx_data  = data["tx"]
+    raw_data = tx_data["data"]
+
+    # deadline (param 4) をブロックタイムスタンプ+10分に差し替える
+    block_ts     = w3.eth.get_block("latest")["timestamp"]
+    new_deadline = block_ts + 600
+    new_dl_hex   = hex(new_deadline)[2:].zfill(64)
+    dl_start     = 2 + 8 + 4 * 64
+    raw_data     = raw_data[:dl_start] + new_dl_hex + raw_data[dl_start + 64:]
+    print(f"  deadline: 新={hex(new_deadline)} (block_ts={block_ts})")
+
+    # amountOutMinimum (param 6) を 0 に設定
+    ao_start = 2 + 8 + 6 * 64
+    raw_data = raw_data[:ao_start] + "0" * 64 + raw_data[ao_start + 64:]
+
+    nonce     = w3.eth.get_transaction_count(account.address)
+    api_gas   = int(tx_data["gasLimit"])
+    gas_limit = max(api_gas * 3, 300000)
+    print(f"  gasLimit: API={api_gas} → 使用={gas_limit}")
+    tx = {
+        "from":     account.address,
+        "to":       Web3.to_checksum_address(tx_data["to"]),
+        "data":     raw_data,
+        "value":    int(tx_data.get("value", 0)),
+        "gas":      gas_limit,
+        "gasPrice": int(tx_data["gasPrice"]),
+        "nonce":    nonce,
+        "chainId":  CHAIN_ID,
+    }
+
+    print("  [simulate] eth_callで事前チェック...")
+    _simulate({k: v for k, v in tx.items() if k != "nonce"})
+
+    return _send_tx(tx)
+
+
+def execute_short(amount_usdt: float) -> str:
+    """ENTER_SHORT: approve_usdt → execute_swap_usdt_to_mnt の順で実行してtx hashを返す。"""
+    print(f"\n[SHORT] ENTER_SHORT: {amount_usdt} USDT → WMNT")
+    approve_usdt()
+    return execute_swap_usdt_to_mnt(amount_usdt)
 
 
 if __name__ == "__main__":

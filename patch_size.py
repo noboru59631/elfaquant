@@ -1,0 +1,5 @@
+﻿t = open('hft_bot_v8.py', encoding='utf-8').read()
+t = t.replace('BASE_SIZE        = Decimal("0.05")', 'BASE_SIZE        = Decimal("0.08")')
+t = t.replace('MAX_POSITION     = Decimal("0.05")', 'MAX_POSITION     = Decimal("0.08")')
+open('hft_bot_v8.py', 'w', encoding='utf-8').write(t)
+print('OK - BASE_SIZE and MAX_POSITION updated to 0.08')

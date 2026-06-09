@@ -1,0 +1,2 @@
+[SIZING] min_size guaranteed: 0.001 BTC
+INFO:     127.0.0.1:49719 - "POST /test_order HTTP/1.1" 200 OK
