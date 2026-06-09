@@ -1,0 +1,8 @@
+.env
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.agents/
+transfer_mnt.py
+setup_elfa_trigger.py
