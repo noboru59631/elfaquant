@@ -237,6 +237,62 @@ def execute_swap(amount_mnt: float) -> str:
     return _send_tx(tx)
 
 
+def execute_swap_wmnt_to_usdt(amount_mnt: float) -> str:
+    """既存のWMNT残高をそのままUSDTにスワップする。wrap_mntは呼ばない。"""
+    amount_wei = int(amount_mnt * 10**18)
+    print(f"\n[SWAP] {amount_mnt} WMNT → USDT (no wrap, {amount_wei} wei)")
+
+    approve_token()
+
+    body = {
+        "inputMint":       WMNT_ADDRESS,
+        "outputMint":      USDT_ADDRESS,
+        "amount":          str(amount_wei),
+        "userPublicKey":   account.address,
+        "dynamicSlippage": False,
+        "slippageBps":     "100",
+    }
+    resp = requests.post(QUOTE_URL, json=body, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    out_amount = int(data["outAmount"]) / 10**6
+    min_out    = int(data["minOutAmount"]) / 10**6
+    print(f"  見積もり: {out_amount:.4f} USDT (最低 {min_out:.4f} USDT, impact={data.get('priceImpact')}%)")
+
+    tx_data  = data["tx"]
+    raw_data = tx_data["data"]
+
+    block_ts     = w3.eth.get_block("latest")["timestamp"]
+    new_deadline = block_ts + 600
+    new_dl_hex   = hex(new_deadline)[2:].zfill(64)
+    dl_start     = 2 + 8 + 4 * 64
+    raw_data     = raw_data[:dl_start] + new_dl_hex + raw_data[dl_start + 64:]
+
+    ao_start = 2 + 8 + 6 * 64
+    raw_data = raw_data[:ao_start] + "0" * 64 + raw_data[ao_start + 64:]
+
+    nonce     = w3.eth.get_transaction_count(account.address)
+    api_gas   = int(tx_data["gasLimit"])
+    gas_limit = max(api_gas * 3, 300000)
+    print(f"  gasLimit: API={api_gas} → 使用={gas_limit}")
+    tx = {
+        "from":     account.address,
+        "to":       Web3.to_checksum_address(tx_data["to"]),
+        "data":     raw_data,
+        "value":    int(tx_data.get("value", 0)),
+        "gas":      gas_limit,
+        "gasPrice": int(tx_data["gasPrice"]),
+        "nonce":    nonce,
+        "chainId":  CHAIN_ID,
+    }
+
+    print("  [simulate] eth_callで事前チェック...")
+    _simulate({k: v for k, v in tx.items() if k != "nonce"})
+
+    return _send_tx(tx)
+
+
 def unwrap_wmnt(amount_mnt: float) -> str:
     """WMNTをネイティブMNTに戻す (WMNT.withdraw)."""
     amount_wei = int(amount_mnt * 10**18)
@@ -334,6 +390,16 @@ def execute_short(amount_usdt: float) -> str:
     print(f"\n[SHORT] ENTER_SHORT: {amount_usdt} USDT → WMNT")
     approve_usdt()
     return execute_swap_usdt_to_mnt(amount_usdt)
+
+
+def get_balances() -> tuple[float, float]:
+    """ウォレットの (MNT, USDT) 残高をfloatで返す。MNT = native + WMNT の合計。"""
+    native_wei = w3.eth.get_balance(account.address)
+    wmnt_wei   = wmnt.functions.balanceOf(account.address).call()
+    usdt_units = usdt.functions.balanceOf(account.address).call()
+    mnt_total  = float(w3.from_wei(native_wei + wmnt_wei, "ether"))
+    usdt_total = usdt_units / 10**6
+    return mnt_total, usdt_total
 
 
 if __name__ == "__main__":
