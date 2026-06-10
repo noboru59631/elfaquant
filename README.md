@@ -158,6 +158,10 @@ ElfaQuant demonstrates end-to-end AI-driven DeFi automation: a multi-phase scori
 
 ## 🎥 Live Demo
 
+[![ElfaQuant Demo](https://img.youtube.com/vi/Y4Yj-bhcCwc/maxresdefault.jpg)](https://youtu.be/Y4Yj-bhcCwc)
+
+▶️ Watch on YouTube: https://youtu.be/Y4Yj-bhcCwc
+
 ### Confirmed On-chain Transaction
 - **Network**: Mantle Mainnet
 - **Action**: MNT → USDT swap via Fluxion DEX
