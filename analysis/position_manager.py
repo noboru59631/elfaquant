@@ -23,6 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger("position_manager")
 
 TRADES_FILE  = THIS_DIR / "trades.json"
+STATE_FILE   = THIS_DIR / "analysis" / "position_state.json"
 MONITOR_INTERVAL = 10   # seconds
 RISK_PCT     = 0.01
 TP_RATIO     = 1.005    # +0.5%
@@ -36,7 +37,15 @@ state: dict = {
     "entry_time":    None,
     "entry_amount":  None,     # MNT amount held
     "tx_entry":      None,
+    "current_price": None,
+    "updated_at":    None,
 }
+
+
+def _save_state() -> None:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
 
 
 def _get_mnt_price() -> float:
@@ -118,6 +127,10 @@ def run_monitor(balance: float = BALANCE) -> None:
         try:
             price = _get_mnt_price()
             logger.info(f"[MONITOR] MNT/USDT=${price:.4f} state={state['status']}")
+
+            state["current_price"] = price
+            state["updated_at"]    = datetime.now(timezone.utc).isoformat()
+            _save_state()
 
             if state["status"] == "FLAT":
                 result   = run_analysis(symbol="BTC", balance=balance)
