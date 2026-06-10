@@ -373,8 +373,16 @@ function runAnalyze() {
 }
 
 function refreshAll() { updatePosition(); updateBalance(); updateCharts(); }
+
+// 起動時
 refreshAll();
+runAnalyze();
+
+// 10秒ごと: 残高・ポジション・チャート更新
 setInterval(refreshAll, 10000);
+
+// 60秒ごと: 分析も実行
+setInterval(runAnalyze, 60000);
 </script>
 </body>
 </html>"""
