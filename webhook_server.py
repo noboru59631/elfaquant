@@ -15,6 +15,7 @@ from typing import Dict, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict
 import uvicorn
 
@@ -110,6 +111,188 @@ def _cooldown_remaining(symbol: str) -> Optional[float]:
     if elapsed < COOLDOWN_SEC:
         return COOLDOWN_SEC - elapsed
     return None
+
+
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ElfaQuant Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a0a; color: #e0e0e0; font-family: 'Courier New', monospace; min-height: 100vh; padding: 32px 24px; }
+  h1 { color: #ff6b00; font-size: 2rem; letter-spacing: 2px; margin-bottom: 4px; }
+  .subtitle { color: #666; font-size: 0.85rem; margin-bottom: 32px; }
+  .btn {
+    background: #ff6b00; color: #000; border: none; padding: 12px 32px;
+    font-size: 1rem; font-family: 'Courier New', monospace; font-weight: bold;
+    cursor: pointer; border-radius: 4px; letter-spacing: 1px; transition: background 0.2s;
+  }
+  .btn:hover { background: #ff8c33; }
+  .btn:disabled { background: #555; color: #999; cursor: not-allowed; }
+  .status { margin-top: 16px; color: #888; font-size: 0.9rem; min-height: 24px; }
+  .card {
+    background: #111; border: 1px solid #222; border-radius: 8px;
+    padding: 24px; margin-top: 24px; display: none;
+  }
+  .card.visible { display: block; }
+  .card h2 { color: #ff6b00; font-size: 1rem; margin-bottom: 16px; letter-spacing: 1px; border-bottom: 1px solid #222; padding-bottom: 8px; }
+  .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1a1a1a; font-size: 0.9rem; }
+  .row:last-child { border-bottom: none; }
+  .label { color: #888; }
+  .value { color: #e0e0e0; font-weight: bold; }
+  .decision-LONG  { color: #00c853; font-size: 1.1rem; }
+  .decision-SHORT { color: #ff1744; font-size: 1.1rem; }
+  .decision-HOLD  { color: #888;    font-size: 1.1rem; }
+  .regime-badge {
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 0.8rem; font-weight: bold;
+  }
+  .regime-TREND_UP   { background: #003322; color: #00c853; }
+  .regime-TREND_DOWN { background: #330011; color: #ff1744; }
+  .regime-RANGE      { background: #1a1a00; color: #ffd600; }
+  .regime-HIGH_VOL   { background: #1a001a; color: #e040fb; }
+  .links { margin-top: 32px; display: flex; gap: 16px; flex-wrap: wrap; }
+  .link-btn {
+    background: transparent; color: #ff6b00; border: 1px solid #ff6b00;
+    padding: 8px 20px; border-radius: 4px; text-decoration: none;
+    font-family: 'Courier New', monospace; font-size: 0.85rem;
+    transition: background 0.2s, color 0.2s;
+  }
+  .link-btn:hover { background: #ff6b00; color: #000; }
+  .divider { border: none; border-top: 1px solid #1e1e1e; margin: 32px 0; }
+  .tx-box { background: #0d0d0d; border: 1px solid #1e1e1e; border-radius: 4px; padding: 12px 16px; margin-top: 8px; font-size: 0.78rem; }
+  .tx-box a { color: #ff6b00; text-decoration: none; word-break: break-all; }
+  .tx-box a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1>⚡ ElfaQuant</h1>
+<p class="subtitle">AI-Powered DeFi Trading Agent on Mantle Network</p>
+
+<button class="btn" id="analyzeBtn" onclick="runAnalyze()">🔍 Analyze Now</button>
+<p class="status" id="status"></p>
+
+<div class="card" id="resultCard">
+  <h2>📊 ANALYSIS RESULT</h2>
+  <div class="row">
+    <span class="label">Market Regime</span>
+    <span class="value" id="regime">—</span>
+  </div>
+  <div class="row">
+    <span class="label">Technical Score</span>
+    <span class="value" id="techScore">—</span>
+  </div>
+  <div class="row">
+    <span class="label">Decision</span>
+    <span class="value" id="decision">—</span>
+  </div>
+  <div class="row">
+    <span class="label">Entry Price</span>
+    <span class="value" id="entry">—</span>
+  </div>
+  <div class="row">
+    <span class="label">Stop-Loss</span>
+    <span class="value" id="sl">—</span>
+  </div>
+  <div class="row">
+    <span class="label">Take-Profit</span>
+    <span class="value" id="tp">—</span>
+  </div>
+  <div class="row">
+    <span class="label">Position Size</span>
+    <span class="value" id="size">—</span>
+  </div>
+  <div class="row">
+    <span class="label">Balance</span>
+    <span class="value" id="bal">—</span>
+  </div>
+</div>
+
+<hr class="divider">
+
+<div>
+  <h2 style="color:#ff6b00; font-size:0.95rem; letter-spacing:1px; margin-bottom:12px;">🔗 ON-CHAIN PROOF</h2>
+  <div class="tx-box">
+    Live swap on Mantle Mainnet (WMNT → USDT via Fluxion V3):<br><br>
+    <a href="https://explorer.mantle.xyz/tx/615e0fb0798ced3cbafdab6b8a1356767b12c69d472fb277b48c18c713ac7294" target="_blank">
+      0x615e0fb0798ced3cbafdab6b8a1356767b12c69d472fb277b48c18c713ac7294
+    </a>
+  </div>
+</div>
+
+<div class="links">
+  <a class="link-btn" href="https://github.com/noboru59631/elfaquant" target="_blank">⌥ GitHub</a>
+  <a class="link-btn" href="/docs" target="_blank">📄 API Docs</a>
+</div>
+
+<script>
+async function runAnalyze() {
+  const btn = document.getElementById('analyzeBtn');
+  const status = document.getElementById('status');
+  const card = document.getElementById('resultCard');
+  btn.disabled = true;
+  btn.textContent = '⏳ Analyzing...';
+  status.textContent = 'Running 5-phase pipeline...';
+  card.classList.remove('visible');
+  try {
+    const res = await fetch('/analyze');
+    const d = await res.json();
+    const regime = d.phase1?.regime ?? '—';
+    const techScore = d.phase3?.total_score ?? '—';
+    const decision = d.phase4?.decision ?? '—';
+    const p5 = d.phase5 ?? {};
+    document.getElementById('regime').innerHTML =
+      '<span class="regime-badge regime-' + regime + '">' + regime + '</span>';
+    document.getElementById('techScore').textContent =
+      typeof techScore === 'number' ? techScore.toFixed(3) : techScore;
+    const decClass = decision.includes('LONG') ? 'LONG' : decision.includes('SHORT') ? 'SHORT' : 'HOLD';
+    document.getElementById('decision').innerHTML =
+      '<span class="decision-' + decClass + '">' + decision + '</span>';
+    document.getElementById('entry').textContent =
+      p5.entry_price ? '$' + p5.entry_price.toLocaleString(undefined, {minimumFractionDigits:1}) : '—';
+    document.getElementById('sl').textContent =
+      p5.sl_price ? '$' + p5.sl_price.toLocaleString(undefined, {minimumFractionDigits:1}) : '—';
+    document.getElementById('tp').textContent =
+      p5.tp_price ? '$' + p5.tp_price.toLocaleString(undefined, {minimumFractionDigits:1}) : '—';
+    document.getElementById('size').textContent =
+      p5.size != null ? p5.size + ' BTC' : '—';
+    document.getElementById('bal').textContent =
+      d.balance != null ? '$' + parseFloat(d.balance).toLocaleString(undefined, {minimumFractionDigits:2}) : '—';
+    card.classList.add('visible');
+    status.textContent = '✅ Done — ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    status.textContent = '❌ Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 Analyze Now';
+  }
+}
+</script>
+</body>
+</html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    return HTMLResponse(content=DASHBOARD_HTML)
+
+
+@app.get("/analyze")
+async def analyze():
+    result = run_analysis(symbol="BTC", balance=balance)
+    phase4 = result["phase4"]
+    phase5 = result["phase5"]
+    mock_phase4 = {"decision": phase4["decision"], "regime": result["phase1"].get("regime")}
+    return {
+        "phase1":  result["phase1"],
+        "phase2":  result["phase2"],
+        "phase3":  result["phase3"],
+        "phase4":  phase4,
+        "phase5":  phase5,
+        "balance": balance,
+    }
 
 
 @app.post("/webhook")

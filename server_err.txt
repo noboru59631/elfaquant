@@ -1,19 +1,19 @@
-2026-06-10 01:03:37,754 [WEBHOOK] starting server on port 8000 (symbol=BTC_USDT_Perp, cooldown=300s)
-INFO:     Started server process [27608]
+2026-06-10 19:26:30,457 [WEBHOOK] starting server on port 8000 (symbol=BTC_USDT_Perp, cooldown=300s)
+INFO:     Started server process [584]
 INFO:     Waiting for application startup.
-2026-06-10 01:03:39,153 HTTP Request: POST https://edge.grvt.io/auth/api_key/login "HTTP/1.1 200 OK"
-2026-06-10 01:03:39,162 [GrvtClient] Login OK - account_id=7643292000705847
-2026-06-10 01:03:39,974 HTTP Request: POST https://trades.grvt.io/full/v1/account_summary "HTTP/1.1 200 OK"
-2026-06-10 01:03:39,981 [BALANCE] fetched balance: $383.28
+2026-06-10 19:26:33,068 HTTP Request: POST https://edge.grvt.io/auth/api_key/login "HTTP/1.1 200 OK"
+2026-06-10 19:26:33,081 [GrvtClient] Login OK - account_id=7643292000705847
+2026-06-10 19:26:33,394 HTTP Request: POST https://trades.grvt.io/full/v1/account_summary "HTTP/1.1 200 OK"
+2026-06-10 19:26:33,403 [BALANCE] fetched balance: $395.43
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-2026-06-10 01:04:19,956 [TEST] dry-run test_order triggered
-2026-06-10 01:04:20,424 HTTP Request: GET https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1d&limit=250 "HTTP/1.1 200 OK"
-2026-06-10 01:04:20,730 HTTP Request: GET https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=200 "HTTP/1.1 200 OK"
-2026-06-10 01:04:21,052 HTTP Request: GET https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT "HTTP/1.1 200 OK"
-2026-06-10 01:04:21,367 HTTP Request: GET https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT "HTTP/1.1 200 OK"
-2026-06-10 01:04:21,695 HTTP Request: GET https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT "HTTP/1.1 200 OK"
-2026-06-10 01:04:22,034 HTTP Request: GET https://fapi.binance.com/fapi/v1/ticker/bookTicker?symbol=BTCUSDT "HTTP/1.1 200 OK"
-2026-06-10 01:04:22,373 HTTP Request: GET https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1d&limit=2 "HTTP/1.1 200 "
-2026-06-10 01:04:22,689 HTTP Request: GET https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=200 "HTTP/1.1 200 OK"
-2026-06-10 01:04:22,701 [TEST] DRY-RUN: would swap 0.001 MNTÅ®USDT on Mantle entry=61024.8 sl=57230.7 tp=68613.1
+2026-06-10 19:33:16,484 [TEST] dry-run test_order triggered (mode=short)
+2026-06-10 19:33:17,042 HTTP Request: GET https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1d&limit=250 "HTTP/1.1 200 OK"
+2026-06-10 19:33:17,370 HTTP Request: GET https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=200 "HTTP/1.1 200 OK"
+2026-06-10 19:33:17,682 HTTP Request: GET https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT "HTTP/1.1 200 OK"
+2026-06-10 19:33:18,086 HTTP Request: GET https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT "HTTP/1.1 200 OK"
+2026-06-10 19:33:18,474 HTTP Request: GET https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT "HTTP/1.1 200 OK"
+2026-06-10 19:33:18,818 HTTP Request: GET https://fapi.binance.com/fapi/v1/ticker/bookTicker?symbol=BTCUSDT "HTTP/1.1 200 OK"
+2026-06-10 19:33:19,158 HTTP Request: GET https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1d&limit=2 "HTTP/1.1 200 "
+2026-06-10 19:33:19,695 HTTP Request: GET https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=200 "HTTP/1.1 200 OK"
+2026-06-10 19:33:19,703 [TEST] DRY-RUN: would swap 3.95 USDTÅ®WMNT on Mantle entry=61353.8 sl=65035.9 tp=53989.6
