@@ -38,7 +38,6 @@ multidict==6.7.1
 mypy_extensions==1.1.0
 packaging==26.2
 parsimonious==0.10.0
-playwright==1.60.0
 propcache==0.5.2
 pycryptodome==3.23.0
 pydantic==2.13.4
@@ -46,7 +45,6 @@ pydantic_core==2.46.4
 pyee==13.0.1
 python-dotenv==1.2.2
 pyunormalize==17.0.0
-pywin32==312
 regex==2026.5.9
 requests==2.34.2
 rlp==4.1.0
