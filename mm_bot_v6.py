@@ -25,10 +25,11 @@ CANCEL_URL = "https://trades.grvt.io/full/v1/cancel_all_orders"
 ORDER_URL  = "https://trades.grvt.io/full/v1/create_order"
 # ─────────────────────────────────────────────────────────────
 
-env = {k.strip(): v.strip()
-       for line in pathlib.Path(".env").read_text(encoding="utf-8").splitlines()
-       if "=" in line and not line.startswith("#")
-       for k, v in [line.split("=", 1)]}
+env = ({k.strip(): v.strip()
+        for line in pathlib.Path(".env").read_text(encoding="utf-8").splitlines()
+        if "=" in line and not line.startswith("#")
+        for k, v in [line.split("=", 1)]}
+       if pathlib.Path(".env").exists() else {})
 
 # ── ランタイム状態 ────────────────────────────────────────────
 position      = Decimal("0")
